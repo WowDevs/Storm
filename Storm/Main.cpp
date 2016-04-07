@@ -1,137 +1,153 @@
 #include <stdio.h>
 #include "Net.h"
+#include "DataStore.h"
+
+DWORD WINAPI HandleConnection(void *clntSocket);
+int LogonChallengeHandler(DataStore *msg);
 
 int main()
 {
-	WSADATA wsaData;
-	int status;
-
-	// Initializing Winsock
-	status = WSAStartup(MAKEWORD(2, 2), &wsaData);
-	if (status != 0)
-	{
-		printf("WSAStartup failed: %d\n", status);
-		return 1;
-	}
-
-	struct addrinfo *result = NULL, *ptr = NULL, hints;
-	ZeroMemory(&hints, sizeof(hints));
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_protocol = IPPROTO_TCP;
-	hints.ai_flags = AI_PASSIVE;
-
-	// Resolve the local address and port to be used by the server instance
-	status = getaddrinfo(NULL, "3724", &hints, &result);
-	if (status != 0)
-	{
-		printf("getaddrinfo failed: %d\n", status);
-		WSACleanup();
-		return 1;
-	}
-
-	// Create a SOCKET for the server to listen for client connections
-	SOCKET listenSocket = INVALID_SOCKET;
-	listenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-	if (listenSocket == INVALID_SOCKET)
-	{
-		printf("Error at socket(): %ld\n", WSAGetLastError());
-		freeaddrinfo(result);
-		WSACleanup();
-		return 1;
-	}
-
-	// Setup the TCP listening socket
-	status = bind(listenSocket, result->ai_addr, (int)result->ai_addrlen);
-	if (status == SOCKET_ERROR)
-	{
-		printf("bind failed with error: %d\n", WSAGetLastError());
-		freeaddrinfo(result);
-		closesocket(listenSocket);
-		WSACleanup();
-		return 1;
-	}
-
-	freeaddrinfo(result);
-
-	if (listen(listenSocket, SOMAXCONN) == SOCKET_ERROR)
-	{
-		printf("Listen failed with error: %ld\n", WSAGetLastError());
-		closesocket(listenSocket);
-		WSACleanup();
-		return 1;
-	}
-
+	Net *netPtr;
+	SOCKET listeningSocket;
 	SOCKET clientSocket;
-	clientSocket = INVALID_SOCKET;
+	int result;
+	int addressSize;
+	DWORD threadId;
 
-	// Accept a client socket
-LABEL_ACCEPT:
-	clientSocket = accept(listenSocket, NULL, NULL);
-	if (clientSocket == INVALID_SOCKET)
-	{
-		printf("accept failed: %d\n", WSAGetLastError());
-		closesocket(listenSocket);
-		WSACleanup();
-		return 1;
-	}
+	netPtr = (Net *)malloc(sizeof(netPtr));
+	result = netPtr->Initialize("3724");
+	listeningSocket = netPtr->CreateListeningSocket();
+	addressSize = sizeof(netPtr->m_address);
 
-	char recvbuf[512];
-	int sendResult;
-	int recvbuflen = 512;
-
-	// Receive until the peer shuts down the connection
 	do 
 	{
-		status = recv(clientSocket, recvbuf, recvbuflen, 0);
-		if (status > 0)
+		// Accept a client socket
+		clientSocket = accept(listeningSocket, 0, 0);
+		if (clientSocket == INVALID_SOCKET)
 		{
-			printf("Bytes received: %d\n", status);
-			printf("MSG reads: ");
-			recvbuflen = status - 1;
-			do 
-			{
-				printf("%c", recvbuf[recvbuflen]);
-				--recvbuflen;
-			} while (recvbuflen != -1);
-			printf("\n");
-
-			// Reply to the client
-			recvbuflen = 512;
-			int msgId = 0;
-			memcpy(&recvbuf[0], &msgId, 1);
-			memcpy(&recvbuf[1], &msgId, 1);
-			msgId = 14;
-			memcpy(&recvbuf[2], &msgId, 1);
-			recvbuf[3] = '\0';
-			recvbuflen = sizeof(recvbuf);
-			sendResult = send(clientSocket, recvbuf, recvbuflen, 0);
-			if (sendResult == SOCKET_ERROR)
-			{
-				printf("send failed: %d\n", WSAGetLastError());
-				closesocket(clientSocket);
-				WSACleanup();
-				return 1;
-			}
-			printf("Bytes sent: %d\n", sendResult);
-			shutdown(clientSocket, SD_SEND);
-			do 
-			{
-				status = recv(clientSocket, recvbuf, recvbuflen, 0);
-			} while (status != -1);
-			closesocket(clientSocket);
-		}
-		else if (status == 0)
-			printf("Connection closing...\n");
-		else
-		{
-			printf("recv failed: %d \n", WSAGetLastError());
-			closesocket(clientSocket);
+			printf("accept failed: %d\n", WSAGetLastError());
+			closesocket(listeningSocket);
 			WSACleanup();
 			return 1;
 		}
-	} while (status > 0);
-
-	goto LABEL_ACCEPT;
+		threadId = 0;
+		CreateThread(0, 0, HandleConnection, (void *)clientSocket, 0, &threadId);
+	} while (1);
+	free(netPtr);
 	return 0;
+}
+
+DWORD WINAPI HandleConnection(void *clntSocket)
+{
+	DataStore *msg;
+	char buf[255];
+	SOCKET clientSocket;
+	int result;
+	int length;
+	unsigned char cmd;
+	unsigned char cmdType;
+
+	clientSocket = (SOCKET)clntSocket;
+	result = 0;
+	length = 255;
+	do 
+	{
+		result = recv(clientSocket, buf, length, 0);
+		printf("Message received from socket %d\n", clientSocket);
+
+		if (result == 0)
+		{
+			printf("The remote end has closed the connection\n");
+			closesocket(clientSocket);
+		}
+		
+		if (result == SOCKET_ERROR)
+		{
+			// The socket was likely closed
+			closesocket(clientSocket);
+		}
+
+		msg = (DataStore *)malloc(sizeof(DataStore));
+		memcpy(msg->m_data, buf, result);
+		msg->m_read = 0;
+		msg->m_size = result;
+		
+		DataStore::Get(msg, &cmd);
+		DataStore::Get(msg, &cmdType);
+
+		switch (cmd)
+		{
+		case AUTH_LOGON_CHALLENGE:
+			LogonChallengeHandler(msg);
+			break;
+		default:
+			printf("GRUNT: Unknown CMD %d\n", cmd);
+			break;
+		}
+	} while (result > 0);
+
+	free(msg);
+	return result;
+}
+
+int LogonChallengeHandler(DataStore *msg)
+{
+	unsigned short size;
+	int val;
+	unsigned char gameName[4];
+	unsigned char version[3];
+	unsigned short build;
+	unsigned char platform[4];
+	unsigned char operatingSystem[4];
+	unsigned char locale[5];
+	int timezoneBias;
+	unsigned char serverAddress[4];
+	unsigned char accountLength;
+	char accountName[17];
+
+	DataStore::Get(msg, &size);
+	DataStore::Get(msg, &val);
+	val = ntohl(val);
+	*(int *)gameName = val;
+	gameName[0] = gameName[1];
+	gameName[1] = gameName[2];
+	gameName[2] = gameName[3];
+	gameName[3] = 0;
+	DataStore::Get(msg, &version[0]);
+	DataStore::Get(msg, &version[1]);
+	DataStore::Get(msg, &version[2]);
+	DataStore::Get(msg, &build);
+	DataStore::Get(msg, &val);
+	val = ntohl(val);
+	*(int *)platform = val;
+	platform[0] = platform[1];
+	platform[1] = platform[2];
+	platform[2] = platform[3];
+	platform[3] = 0;
+	DataStore::Get(msg, &val);
+	val = ntohl(val);
+	*(int *)operatingSystem = val;
+	operatingSystem[0] = operatingSystem[1];
+	operatingSystem[1] = operatingSystem[2];
+	operatingSystem[2] = operatingSystem[3];
+	operatingSystem[3] = 0;
+	DataStore::Get(msg, &val);
+	val = ntohl(val);
+	*(int *)locale = val;
+	locale[4] = 0;
+	DataStore::Get(msg, &timezoneBias);
+	DataStore::Get(msg, &val);
+	*(int *)serverAddress = val;
+	DataStore::Get(msg, &accountLength);
+	DataStore::GetString(msg, accountName, accountLength);
+
+	printf(
+		"GRUNT:\n\nLogonChallenge accepted connection from %s, patch %d.%d.%d (build %d).\n"
+		"The platform is %s on %s, in %s locale.\n"
+		"The account name is %s.\n"
+		"The requested realmlist is %d.%d.%d.%d.\n\n",
+		gameName, version[0], version[1], version[2], build, platform, operatingSystem, locale, accountName,
+		serverAddress[0], serverAddress[1], serverAddress[2], serverAddress[3]
+		);
+return 0;
 }

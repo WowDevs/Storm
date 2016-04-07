@@ -1,38 +1,45 @@
 #ifndef NET_H
+#define NET_H
 
+// General headers
+#include <stdio.h>
+
+// Windows-specific headers
 #ifdef _WIN32
+#undef _WINSOCKAPI_
+#define _WINSOCKAPI_
+#include <windows.h>
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #pragma comment(lib, "Ws2_32.lib")
 #endif // _WIN32
 
-struct DataStore
+enum WOWCS_OPS
 {
-	DataStore *Put(DataStore *msgPtr, int val);
-	DataStore *Get(DataStore *msgPtr, int *val);
-
-	char *m_data;
-	unsigned int m_base;
-	unsigned int m_alloc;
-	unsigned int m_size;
-	unsigned int m_read;
+	AUTH_LOGON_CHALLENGE = 0x00,
+	AUTH_LOGON_PROOF = 0x01,
+	AUTH_RECONNECT_CHALLENGE = 0x02,
+	AUTH_RECONNECT_PROOF = 0x03,
+	REALM_LIST = 0x10,
+	XFER_INITIATE = 0x30,
+	XFER_DATA = 0x31,
+	XFER_ACCEPT = 0x32,
+	XFER_RESUME = 0x33,
+	XFER_CANCEL = 0x34
 };
 
-DataStore *DataStore::Put(DataStore *msgPtr, int val)
+struct Net
 {
-	DataStore *msg;
+// Windows-specific functions
+#ifdef _WIN32
+	int InitializeWinsock(const char *port);
+	SOCKET CreateWindowsListeningSocket();
+#endif
 
-	msg = msgPtr;
-	return msg;
-}
+	int Initialize(const char *port);
+	SOCKET CreateListeningSocket();
 
-DataStore *DataStore::Get(DataStore *msgPtr, int *val)
-{
-	DataStore *msg;
-
-	msg = msgPtr;
-	//*val = *(&msg->m_data[msg->m_read] - *v6);
-	return msg;
-}
+	struct addrinfo *m_address;
+};
 
 #endif // !NET_H
